@@ -94,7 +94,7 @@ struct thread
 	int base_priority;		   /* thread base priority. */
 	int priority;			   /* Priority. */
 	struct list donators;	   /* donation list. */
-	struct lock *waiting_lock;  /* wating lock. */
+	struct lock *waiting_lock; /* wating lock. */
 	int64_t wakeup_tick;	   /* ticks of wakeup. */
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;			/* List element. */
