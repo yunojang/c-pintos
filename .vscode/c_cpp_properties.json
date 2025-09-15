@@ -1,0 +1,12 @@
+{
+  "configurations": [
+    {
+      "name": "default",
+       "includePath": [
+        "${workspaceFolder}/**"
+      ],
+      "defines": ["USERPROG"]
+    }
+  ],
+  "version": 4
+}
