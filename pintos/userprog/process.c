@@ -182,8 +182,6 @@ int process_exec(void *f_name)
 	/* We first kill the current context */
 	process_cleanup();
 
-	/* passing  */
-
 	/* And then load the binary */
 	success = load(file_name, &_if);
 
@@ -342,9 +340,55 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
  * Stores the executable's entry point into *RIP
  * and its initial stack pointer into *RSP.
  * Returns true if successful, false otherwise. */
-static bool
-load(const char *file_name, struct intr_frame *if_)
+
+static void push_arg(char **rsp, char *arg)
 {
+	ASSERT(arg != NULL);
+	size_t len = strlen(arg) + 1;
+	*rsp -= len;
+	memcpy(*rsp, arg, len);
+}
+
+static char *parse_line(char *line, char **save_ptr)
+{
+	ASSERT(line != NULL);
+	ASSERT(save_ptr != NULL);
+
+	if (*line == '\0')
+	{
+		*save_ptr = line;
+		return NULL;
+	}
+
+	while (*line == ' ')
+	{
+		line++;
+	}
+
+	char *tok = line;
+	while (*line != ' ' && *line != '\0')
+	{
+		line++;
+	}
+
+	if (*line == '\0')
+	{
+		*save_ptr = line;
+		return tok;
+	}
+
+	*line = '\0';
+	*save_ptr = line + 1;
+
+	return tok;
+}
+
+static bool
+load(const char *line, struct intr_frame *if_)
+{
+	char *save_ptr;
+	char *file_name = parse_line(line, &save_ptr);
+
 	struct thread *t = thread_current();
 	struct ELF ehdr;
 	struct file *file = NULL;
@@ -442,30 +486,41 @@ load(const char *file_name, struct intr_frame *if_)
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 
-	// 스택 셋업후에 인터럽트 프레임 기반으로, 스택에 넣기
-	uint64_t argc = 1;
+	// 스택 셋업후, 인터럽트 프레임에서 rsp 수정
 
-	// arg-none -> filename 만 스택에
-	// USERSTACK - len_b
-	size_t len_b = strlen(file_name) + 1;
-	if_->rsp -= len_b;
-	memcpy(if_->rsp, file_name, len_b);
-	char *arg0_addr = if_->rsp;
+	/* passing  */
+	uint64_t argc = 0;
+	uint64_t uargv[32];
 
-	// 주소 정렬
-	if_->rsp = (uint8_t *)((uintptr_t)if_->rsp & ~0x7);
+	// push filename
+	push_arg(&if_->rsp, file_name);
+	uargv[argc++] = if_->rsp;
 
-	// USERSTACK - len_b - 8
+	char *tok;
+	while ((tok = parse_line(save_ptr, &save_ptr)) != NULL)
+	{
+		push_arg(&if_->rsp, tok);
+		uargv[argc++] = if_->rsp;
+	}
+
+	// 주소 정렬 (주소의 하위 세비트 없앰 -> 16byte 정렬 + 저주소 성장)
+	if_->rsp = (uint8_t *)((uintptr_t)if_->rsp & ~0xF);
+
+	// argv end point
 	if_->rsp -= sizeof(void *);
 	*(void **)(if_->rsp) = NULL;
 
-	// USERSTACK - len_b - 8 - 8
-	if_->rsp -= sizeof(char *);
-	*(char **)(if_->rsp) = arg0_addr;
+	// push addr (in argv)
+	for (int i = argc - 1; i >= 0; i--)
+	{
+		if_->rsp -= sizeof(char *);
+		*(char **)(if_->rsp) = uargv[i];
+	}
 	char **argv = if_->rsp;
 
-	// if_->rsp -= sizeof(uint64_t);
-	// *(uint64_t *)(if_->rsp) = (uint64_t)argc;
+	// push first arg addr (start argv)
+	// if_->rsp -= sizeof(char *);
+	// *(char **)(if_->rsp) = arg0_addr;
 
 	// ret addr
 	if_->rsp -= sizeof(void *);
