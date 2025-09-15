@@ -503,7 +503,7 @@ load(const char *line, struct intr_frame *if_)
 		uargv[argc++] = if_->rsp;
 	}
 
-	// 주소 정렬 (주소의 하위 세비트 없앰 -> 16byte 정렬 + 저주소 성장)
+	// 주소 정렬 (주소의 하위비트 없앰 -> 16byte 정렬[저주소 성장])
 	if_->rsp = (uint8_t *)((uintptr_t)if_->rsp & ~0xF);
 
 	// argv end point
@@ -517,10 +517,6 @@ load(const char *line, struct intr_frame *if_)
 		*(char **)(if_->rsp) = uargv[i];
 	}
 	char **argv = if_->rsp;
-
-	// push first arg addr (start argv)
-	// if_->rsp -= sizeof(char *);
-	// *(char **)(if_->rsp) = arg0_addr;
 
 	// ret addr
 	if_->rsp -= sizeof(void *);
