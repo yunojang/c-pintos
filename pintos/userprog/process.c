@@ -18,6 +18,8 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "threads/malloc.h"
+
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -26,6 +28,7 @@ static void process_cleanup(void);
 static bool load(const char *file_name, struct intr_frame *if_);
 static void initd(void *f_name);
 static void __do_fork(void *);
+static char *parse_line(char *line, char **save_ptr);
 
 /* General process initializer for initd and other process. */
 static void
@@ -39,6 +42,13 @@ process_init(void)
  * before process_create_initd() returns. Returns the initd's
  * thread id, or TID_ERROR if the thread cannot be created.
  * Notice that THIS SHOULD BE CALLED ONCE. */
+
+struct start_aux
+{
+	char *fn_copy;
+	struct child_status *cs;
+};
+
 tid_t process_create_initd(const char *file_name)
 {
 	char *fn_copy;
@@ -52,7 +62,21 @@ tid_t process_create_initd(const char *file_name)
 	strlcpy(fn_copy, file_name, PGSIZE);
 
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
+	char *save;
+	file_name = parse_line(file_name, &save);
+
+	struct child_status *cs = malloc(sizeof(struct child_status));
+	sema_init(&cs->dead, 0);
+	cs->exited = false;
+
+	struct start_aux *aux = malloc(sizeof *aux);
+	aux->fn_copy = fn_copy;
+	aux->cs = cs;
+
+	tid = thread_create(file_name, PRI_DEFAULT, initd, aux);
+
+	list_push_back(&thread_current()->children, &cs->elem);
+
 	if (tid == TID_ERROR)
 		palloc_free_page(fn_copy);
 	return tid;
@@ -60,15 +84,17 @@ tid_t process_create_initd(const char *file_name)
 
 /* A thread function that launches first user process. */
 static void
-initd(void *f_name)
+initd(void *_aux)
 {
 #ifdef VM
 	supplemental_page_table_init(&thread_current()->spt);
 #endif
-
 	process_init();
 
-	if (process_exec(f_name) < 0)
+	struct start_aux *aux = _aux;
+	thread_current()->cs = aux->cs;
+
+	if (process_exec(aux->fn_copy) < 0)
 		PANIC("Fail to launch initd\n");
 	NOT_REACHED();
 }
@@ -210,9 +236,8 @@ int process_wait(tid_t child_tid UNUSED)
 	// sema_init(&sema, 0);
 	// sema_down(&sema);
 
-	while (1)
-	{
-	}
+	struct child_status *cs = list_entry(list_pop_front(&thread_current()->children), struct child_status, elem);
+	sema_down(&cs->dead);
 
 	// list_pop_front(&thread_current()->children);
 	// sema_down(&dead);

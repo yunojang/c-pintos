@@ -42,8 +42,12 @@ void syscall_init(void)
 static int handle_exit(int status)
 {
 	struct thread *cur = thread_current();
+	cur->exit_status = status;
+
+	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
 	// fd 정리
 	// 부모 통지
+	sema_up(&cur->cs->dead);
 }
 
 static int handle_write(int fd, const void *uaddr, size_t n)
@@ -72,7 +76,11 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {
-	// TODO: Your implementation goes here.
+	if (f->R.rax == SYS_HALT)
+	{
+		power_off();
+	}
+
 	if (f->R.rax == SYS_EXIT)
 	{
 		handle_exit(f->R.rdi);
