@@ -237,7 +237,10 @@ int process_wait(tid_t child_tid UNUSED)
 	// sema_down(&sema);
 
 	struct child_status *cs = list_entry(list_pop_front(&thread_current()->children), struct child_status, elem);
+
 	sema_down(&cs->dead);
+
+	free(cs);
 
 	// list_pop_front(&thread_current()->children);
 	// sema_down(&dead);
