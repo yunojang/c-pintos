@@ -15,9 +15,12 @@
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
-static void handle_exit(int status);
+
 static bool valid_uaddr(const char *uaddr);
 static size_t copy_in_string(char *dst, const char *src, size_t max);
+
+static void handle_exit(int status);
+static int handle_read(int fd, void *buffer, unsigned size);
 
 /* System call.
  *
@@ -98,6 +101,7 @@ static char *copy_file(char *file)
 	return name;
 }
 
+// refactor -> min fd
 static int next_fd = 2;
 
 static int fd_install()
@@ -106,6 +110,70 @@ static int fd_install()
 }
 
 // ---
+
+// list utils
+
+typedef bool list_match_func(const struct list_elem *a, void *aux);
+
+static struct list_elem *list_find(struct list *l, list_match_func match, void *aux)
+{
+	ASSERT(l != NULL);
+	struct list_elem *cur;
+
+	for (cur = list_begin(l); cur != list_end(l); cur = list_next(cur))
+	{
+		if (match(cur, aux))
+		{
+			return cur;
+		}
+	}
+
+	return NULL;
+}
+
+// ---
+
+static int handle_read(int fd, void *buffer, unsigned size)
+{
+}
+
+static bool match_fd(const struct list_elem *a, void *aux)
+{
+	int fd = (int)aux;
+	return list_entry(a, struct fd_elem, elem)->fd == fd;
+}
+
+static struct fd_elem *find_fd_elem(struct list *l, int find_fd)
+{
+	struct list_elem *elem;
+	if ((elem = list_find(l, match_fd, find_fd)) == NULL)
+	{
+		return NULL;
+	}
+
+	return list_entry(list_find(l, match_fd, find_fd), struct fd_elem, elem);
+}
+
+static void handle_close(int fd)
+{
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+
+	if ((fe = find_fd_elem(&t->fds, fd)) == NULL)
+	{
+		return;
+	}
+
+	list_remove(&fe->elem);
+}
+
+static bool lower_fd(const struct list_elem *new, const struct list_elem *item, void *aux)
+{
+	int new_fd = list_entry(new, struct fd_elem, elem)->fd;
+	int item_fd = list_entry(item, struct fd_elem, elem)->fd;
+
+	return new_fd < item_fd;
+}
 
 static int handle_open(char *file)
 {
@@ -129,7 +197,7 @@ static int handle_open(char *file)
 	fe->fd = fd_install();
 	fe->file = f;
 
-	list_push_back(&t->fds, &fe->elem);
+	list_insert_ordered(&t->fds, &fe->elem, lower_fd, NULL);
 	return fe->fd;
 }
 
@@ -210,6 +278,13 @@ void syscall_handler(struct intr_frame *f UNUSED)
 			handle_exit(-1);
 		}
 		f->R.rax = handle_open(f->R.rdi);
+		break;
+	case SYS_READ:
+		int fd = (int)f->R.rdi;
+		f->R.rax = handle_read(fd, f->R.rsi, f->R.rdx);
+		break;
+	case SYS_CLOSE:
+		handle_close(f->R.rdi);
 		break;
 	case SYS_WRITE:
 		int fd = (int)f->R.rdi;
