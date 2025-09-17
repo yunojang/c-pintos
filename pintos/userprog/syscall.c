@@ -7,11 +7,16 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "threads/malloc.h"
+#include "include/filesys/directory.h"
+#include "filesys/filesys.h"
 
 #define STDOUT_FD 1
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
+static bool valid_uaddr(const char *uaddr);
+static size_t copy_in_string(char *dst, const char *src, size_t max);
 
 /* System call.
  *
@@ -39,15 +44,74 @@ void syscall_init(void)
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
-static int handle_exit(int status)
+// utils
+
+static bool valid_uaddr(const char *uaddr)
+{
+	return uaddr != NULL && is_user_vaddr(uaddr) && pml4_get_page(thread_current()->pml4, (void *)uaddr) != NULL;
+}
+
+static size_t copy_in_string(char *dst, const char *src, size_t max)
+{
+	size_t n = 0;
+	struct thread *t = thread_current();
+
+	while (n < max)
+	{
+		const char *p = src + n;
+		if (!valid_uaddr(p))
+		{
+			handle_exit(-1);
+		}
+
+		char c = *p;
+		dst[n++] = c;
+		if (c == '\0')
+		{
+			return n - 1;
+		}
+	}
+	return n;
+}
+
+// static char *copy to
+
+// ---
+
+static bool
+handle_open(char *file)
+{
+}
+
+static bool handle_create(char *file, unsigned int initial_size)
+{
+	ASSERT(file != NULL);
+
+	char *name = malloc(NAME_MAX + 1);
+	size_t len;
+	if ((len = copy_in_string(name, file, NAME_MAX + 1)) > NAME_MAX)
+	{
+		return false;
+	}
+
+	bool success = filesys_create(name, initial_size);
+	free(name);
+	return success;
+}
+
+static void handle_exit(int status)
 {
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
 
-	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
 	// fd 정리
-	// 부모 통지
+
+	// exit msg
+	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+
+	// 부모 통지 (msg 출력 후 통지)
 	sema_up(&cur->cs->dead);
+	thread_exit();
 }
 
 static int handle_write(int fd, const void *uaddr, size_t n)
@@ -76,20 +140,33 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {
-	if (f->R.rax == SYS_HALT)
+	switch (f->R.rax)
 	{
-		power_off();
-	}
-
-	if (f->R.rax == SYS_EXIT)
-	{
+	case SYS_EXIT:
 		handle_exit(f->R.rdi);
-		thread_exit();
-	}
-
-	if (f->R.rax == SYS_WRITE)
-	{
+		break;
+	case SYS_HALT:
+		power_off();
+		break;
+	case SYS_CREATE:
+		if (!valid_uaddr(f->R.rdi))
+		{
+			handle_exit(-1);
+		}
+		f->R.rax = handle_create(f->R.rdi, f->R.rsi) ? 1 : 0;
+		break;
+	case SYS_OPEN:
+		if (!valid_uaddr(f->R.rdi))
+		{
+			handle_exit(-1);
+		}
+		f->R.rax = handle_open(f->R.rdi) ? 1 : 0;
+		break;
+	case SYS_WRITE:
 		int fd = (int)f->R.rdi;
 		f->R.rax = handle_write(fd, f->R.rsi, f->R.rdx);
+		break;
+	default:
+		break;
 	}
 }
