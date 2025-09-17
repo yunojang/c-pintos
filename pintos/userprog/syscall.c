@@ -15,6 +15,7 @@
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
+static void handle_exit(int status);
 static bool valid_uaddr(const char *uaddr);
 static size_t copy_in_string(char *dst, const char *src, size_t max);
 
@@ -44,7 +45,16 @@ void syscall_init(void)
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
-// utils
+// struct --
+struct fd_elem
+{
+	int fd;
+	struct file *file;
+	struct list_elem elem;
+};
+// ---
+
+// utils ---
 
 static bool valid_uaddr(const char *uaddr)
 {
@@ -74,22 +84,61 @@ static size_t copy_in_string(char *dst, const char *src, size_t max)
 	return n;
 }
 
-// static char *copy to
-
-// ---
-
-static bool
-handle_open(char *file)
-{
-}
-
-static bool handle_create(char *file, unsigned int initial_size)
+static char *copy_file(char *file)
 {
 	ASSERT(file != NULL);
 
 	char *name = malloc(NAME_MAX + 1);
 	size_t len;
 	if ((len = copy_in_string(name, file, NAME_MAX + 1)) > NAME_MAX)
+	{
+		return NULL;
+	}
+
+	return name;
+}
+
+static int next_fd = 2;
+
+static int fd_install()
+{
+	return next_fd++;
+}
+
+// ---
+
+static int handle_open(char *file)
+{
+	ASSERT(file != NULL);
+	struct thread *t = thread_current();
+
+	char *name;
+	if ((name = copy_file(file)) == NULL)
+	{
+		return -1;
+	}
+
+	struct file *f = filesys_open(file);
+	// file not in dir
+	if (f == NULL)
+	{
+		return -1;
+	}
+
+	struct fd_elem *fe = malloc(sizeof *fe);
+	fe->fd = fd_install();
+	fe->file = f;
+
+	list_push_back(&t->fds, &fe->elem);
+	return fe->fd;
+}
+
+static bool handle_create(char *file, unsigned int initial_size)
+{
+	ASSERT(file != NULL);
+
+	char *name;
+	if ((name = copy_file(file)) == NULL)
 	{
 		return false;
 	}
@@ -149,18 +198,18 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		power_off();
 		break;
 	case SYS_CREATE:
-		if (!valid_uaddr(f->R.rdi))
+		if (f->R.rdi == NULL)
 		{
 			handle_exit(-1);
 		}
 		f->R.rax = handle_create(f->R.rdi, f->R.rsi) ? 1 : 0;
 		break;
 	case SYS_OPEN:
-		if (!valid_uaddr(f->R.rdi))
+		if (f->R.rdi == NULL)
 		{
 			handle_exit(-1);
 		}
-		f->R.rax = handle_open(f->R.rdi) ? 1 : 0;
+		f->R.rax = handle_open(f->R.rdi);
 		break;
 	case SYS_WRITE:
 		int fd = (int)f->R.rdi;

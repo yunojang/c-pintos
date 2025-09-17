@@ -582,6 +582,7 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
 	list_init(&t->donators);
+	list_init(&t->fds);
 #ifdef USERPROG
 	list_init(&t->children);
 #endif

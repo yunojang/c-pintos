@@ -110,6 +110,7 @@ struct thread
 	struct list_elem elem;			/* List element. */
 	struct list_elem donation_elem; /* Donation list element. */
 	int exit_status;
+	struct list fds;
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
