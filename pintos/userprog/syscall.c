@@ -266,7 +266,9 @@ static int handle_open(char *file)
 		return -1;
 	}
 
-	struct file *f = filesys_open(file);
+	struct file *f = filesys_open(name);
+	free(name);
+
 	// file not in dir
 	if (f == NULL)
 	{
