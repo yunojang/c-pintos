@@ -219,16 +219,17 @@ static int handle_read(int fd, void *ubuf, unsigned size)
 	{
 		for (int i = 0; i < size; i++)
 		{
-			uint8_t b = input_getc();
-			copy_out(ubuf + i, &b, 1);
+			uint8_t b = input_getc();  // get byte by stdin
+			copy_out(ubuf + i, &b, 1); // byte -> ubuf
 		}
 		read_n = size;
 	}
 	else
 	{
 		void *tmp_buf = malloc(size);
-		read_n = file_read(fe->file, tmp_buf, size);
-		copy_out(ubuf, tmp_buf, read_n);
+		read_n = file_read(fe->file, tmp_buf, size); // file -> tmpbuf
+		copy_out(ubuf, tmp_buf, read_n);			 // tmpbuf -> ubuf
+		free(tmp_buf);
 	}
 
 	return read_n;
@@ -245,6 +246,7 @@ static void handle_close(int fd)
 	}
 
 	list_remove(&fe->elem);
+	free(fe);
 }
 
 static bool lower_fd(const struct list_elem *new, const struct list_elem *item, void *aux)
