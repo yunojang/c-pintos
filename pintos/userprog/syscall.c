@@ -11,15 +11,17 @@
 #include "include/filesys/directory.h"
 #include "filesys/filesys.h"
 
+#define STDIN_FD 0
 #define STDOUT_FD 1
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
 
-static bool valid_uaddr(const char *uaddr);
+static void *valid_uaddr(const char *uaddr);
 static size_t copy_in_string(char *dst, const char *src, size_t max);
 
 static void handle_exit(int status);
+static int handle_filesize(int fd);
 static int handle_read(int fd, void *buffer, unsigned size);
 
 /* System call.
@@ -59,26 +61,37 @@ struct fd_elem
 
 // utils ---
 
-static bool valid_uaddr(const char *uaddr)
+static void *valid_uaddr(const char *uaddr)
 {
-	return uaddr != NULL && is_user_vaddr(uaddr) && pml4_get_page(thread_current()->pml4, (void *)uaddr) != NULL;
+	void *ptr;
+
+	if (uaddr == NULL || !is_user_vaddr(uaddr))
+	{
+		return NULL;
+	}
+	if ((ptr = pml4_get_page(thread_current()->pml4, (void *)uaddr)) == NULL)
+	{
+		return NULL;
+	}
+
+	return ptr;
 }
 
-static size_t copy_in_string(char *dst, const char *src, size_t max)
+// user -> kernel (string)
+static size_t copy_in_string(char *kdst, const char *usrc, size_t max)
 {
 	size_t n = 0;
-	struct thread *t = thread_current();
 
 	while (n < max)
 	{
-		const char *p = src + n;
-		if (!valid_uaddr(p))
+		const char *p = usrc + n;
+		if (valid_uaddr(p) == NULL)
 		{
 			handle_exit(-1);
 		}
 
 		char c = *p;
-		dst[n++] = c;
+		kdst[n++] = c;
 		if (c == '\0')
 		{
 			return n - 1;
@@ -93,6 +106,7 @@ static char *copy_file(char *file)
 
 	char *name = malloc(NAME_MAX + 1);
 	size_t len;
+	// file name max사이즈보다 크면 null 반환
 	if ((len = copy_in_string(name, file, NAME_MAX + 1)) > NAME_MAX)
 	{
 		return NULL;
@@ -101,9 +115,23 @@ static char *copy_file(char *file)
 	return name;
 }
 
-// refactor -> min fd
-static int next_fd = 2;
+// kernel -> user
+static size_t copy_out(void *udst, const void *ksrc, size_t size)
+{
+	size_t n = 0;
+	while (n < size)
+	{
+		uint8_t *kaddr;
+		if ((kaddr = valid_uaddr((char *)udst + n)) == NULL)
+		{
+			handle_exit(-1);
+		}
+		*kaddr = ((uint8_t *)ksrc)[n++];
+	}
+	return n;
+}
 
+static int next_fd = 2;
 static int fd_install()
 {
 	return next_fd++;
@@ -133,10 +161,7 @@ static struct list_elem *list_find(struct list *l, list_match_func match, void *
 
 // ---
 
-static int handle_read(int fd, void *buffer, unsigned size)
-{
-}
-
+// fd
 static bool match_fd(const struct list_elem *a, void *aux)
 {
 	int fd = (int)aux;
@@ -152,6 +177,61 @@ static struct fd_elem *find_fd_elem(struct list *l, int find_fd)
 	}
 
 	return list_entry(list_find(l, match_fd, find_fd), struct fd_elem, elem);
+}
+// ---
+
+static int handle_filesize(int fd)
+{
+	if (fd == STDIN_FD || fd == STDOUT_FD)
+	{
+		return -1;
+	}
+
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+
+	if ((fe = find_fd_elem(&t->fds, fd)) == NULL)
+	{
+		return -1;
+	}
+
+	return file_length(fe->file);
+}
+
+static int handle_read(int fd, void *ubuf, unsigned size)
+{
+	if (size == 0)
+	{
+		return 0;
+	}
+
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+
+	// invalid fd
+	if (fd != STDIN_FD && (fe = find_fd_elem(&t->fds, fd)) == NULL)
+	{
+		return -1;
+	}
+
+	size_t read_n;
+	if (fd == STDIN_FD)
+	{
+		for (int i = 0; i < size; i++)
+		{
+			uint8_t b = input_getc();
+			copy_out(ubuf + i, &b, 1);
+		}
+		read_n = size;
+	}
+	else
+	{
+		void *tmp_buf = malloc(size);
+		read_n = file_read(fe->file, tmp_buf, size);
+		copy_out(ubuf, tmp_buf, read_n);
+	}
+
+	return read_n;
 }
 
 static void handle_close(int fd)
@@ -279,16 +359,17 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		}
 		f->R.rax = handle_open(f->R.rdi);
 		break;
+	case SYS_FILESIZE:
+		f->R.rax = handle_filesize(f->R.rdi);
+		break;
 	case SYS_READ:
-		int fd = (int)f->R.rdi;
-		f->R.rax = handle_read(fd, f->R.rsi, f->R.rdx);
+		f->R.rax = handle_read(f->R.rdi, f->R.rsi, f->R.rdx);
 		break;
 	case SYS_CLOSE:
 		handle_close(f->R.rdi);
 		break;
 	case SYS_WRITE:
-		int fd = (int)f->R.rdi;
-		f->R.rax = handle_write(fd, f->R.rsi, f->R.rdx);
+		f->R.rax = handle_write(f->R.rdi, f->R.rsi, f->R.rdx);
 		break;
 	default:
 		break;
