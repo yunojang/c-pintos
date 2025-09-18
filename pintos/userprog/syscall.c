@@ -81,9 +81,8 @@ static void *valid_uaddr(const char *uaddr)
 // user -> kernel (string)
 static size_t copy_in_string(char *kdst, const char *usrc, size_t max)
 {
-	size_t n = 0;
-
-	while (n < max)
+	size_t n;
+	for (n = 0; n < max; n++)
 	{
 		const char *p = usrc + n;
 		if (valid_uaddr(p) == NULL)
@@ -92,12 +91,13 @@ static size_t copy_in_string(char *kdst, const char *usrc, size_t max)
 		}
 
 		char c = *p;
-		kdst[n++] = c;
+		kdst[n] = c;
 		if (c == '\0')
 		{
-			return n - 1;
+			return n;
 		}
 	}
+
 	return n;
 }
 
