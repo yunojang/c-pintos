@@ -23,6 +23,7 @@ static size_t copy_in_string(char *dst, const char *src, size_t max);
 static void handle_exit(int status);
 static int handle_filesize(int fd);
 static int handle_read(int fd, void *buffer, unsigned size);
+static int handle_write(int fd, const void *uaddr, size_t n);
 
 /* System call.
  *
@@ -113,6 +114,22 @@ static char *copy_file(char *file)
 	}
 
 	return name;
+}
+
+static size_t copy_in(void *kdst, const void *usrc, size_t size)
+{
+	size_t n = 0;
+	while (n < size)
+	{
+		const uint8_t *p = (uint8_t *)usrc + n;
+		uint8_t *vaddr;
+		if ((vaddr = valid_uaddr(p)) == NULL)
+		{
+			handle_exit(-1);
+		}
+		((uint8_t *)kdst)[n++] = *vaddr;
+	}
+	return n;
 }
 
 // kernel -> user
@@ -235,6 +252,41 @@ static int handle_read(int fd, void *ubuf, unsigned size)
 	return read_n;
 }
 
+static int handle_write(int fd, const void *uaddr, size_t n)
+{
+	if (n == 0 || fd == STDIN_FD)
+	{
+		return 0;
+	}
+
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+
+	if (fd != STDOUT_FD && (fe = find_fd_elem(&t->fds, fd)) == NULL)
+	{
+		return -1;
+	}
+
+	if (!valid_uaddr(uaddr))
+	{
+		handle_exit(-1);
+	}
+
+	if (fd == STDOUT_FD)
+	{
+		putbuf(uaddr, n);
+	}
+	else
+	{
+		// void *tmp_buf = malloc(n);
+		// copy_in(tmp_buf, uaddr, n);
+		file_write(fe->file, uaddr, n);
+		// free(tmp_buf);
+	}
+
+	return n;
+}
+
 static void handle_close(int fd)
 {
 	struct thread *t = thread_current();
@@ -315,29 +367,6 @@ static void handle_exit(int status)
 	thread_exit();
 }
 
-static int handle_write(int fd, const void *uaddr, size_t n)
-{
-	if (fd != STDOUT_FD)
-	{
-		return -1;
-	}
-	if (n == 0)
-	{
-		return 0;
-	}
-
-	// uaddr ~ 'uaddr + n' -> 유저영역 & 읽기가능?
-	if (!is_user_vaddr(uaddr))
-	{
-		return -1;
-	}
-
-	// 청크 copy-in -> 콘솔 출력
-	putbuf(uaddr, n);
-
-	return n;
-}
-
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {
@@ -369,11 +398,11 @@ void syscall_handler(struct intr_frame *f UNUSED)
 	case SYS_READ:
 		f->R.rax = handle_read(f->R.rdi, f->R.rsi, f->R.rdx);
 		break;
-	case SYS_CLOSE:
-		handle_close(f->R.rdi);
-		break;
 	case SYS_WRITE:
 		f->R.rax = handle_write(f->R.rdi, f->R.rsi, f->R.rdx);
+		break;
+	case SYS_CLOSE:
+		handle_close(f->R.rdi);
 		break;
 	default:
 		break;
