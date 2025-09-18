@@ -272,18 +272,19 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 		handle_exit(-1);
 	}
 
+	void *tmp_buf = malloc(n);
 	if (fd == STDOUT_FD)
 	{
-		putbuf(uaddr, n);
+		copy_in(tmp_buf, uaddr, n);
+		putbuf(tmp_buf, n);
 	}
 	else
 	{
-		// void *tmp_buf = malloc(n);
-		// copy_in(tmp_buf, uaddr, n);
-		file_write(fe->file, uaddr, n);
-		// free(tmp_buf);
+		copy_in(tmp_buf, uaddr, n);
+		file_write(fe->file, tmp_buf, n);
 	}
 
+	free(tmp_buf);
 	return n;
 }
 
