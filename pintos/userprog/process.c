@@ -65,17 +65,11 @@ tid_t process_create_initd(const char *file_name)
 	char *save;
 	file_name = parse_line(file_name, &save);
 
-	struct child_status *cs = malloc(sizeof(struct child_status));
-	sema_init(&cs->dead, 0);
-	cs->exited = false;
+	// struct start_aux *aux = malloc(sizeof *aux);
+	// aux->fn_copy = fn_copy;
+	// aux->cs = cs;
 
-	struct start_aux *aux = malloc(sizeof *aux);
-	aux->fn_copy = fn_copy;
-	aux->cs = cs;
-
-	tid = thread_create(file_name, PRI_DEFAULT, initd, aux);
-
-	list_push_back(&thread_current()->children, &cs->elem);
+	tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
 
 	if (tid == TID_ERROR)
 		palloc_free_page(fn_copy);
@@ -84,28 +78,43 @@ tid_t process_create_initd(const char *file_name)
 
 /* A thread function that launches first user process. */
 static void
-initd(void *_aux)
+initd(void *fn_copy)
 {
 #ifdef VM
 	supplemental_page_table_init(&thread_current()->spt);
 #endif
 	process_init();
 
-	struct start_aux *aux = _aux;
-	thread_current()->cs = aux->cs;
+	// struct start_aux *aux = _aux;
+	// thread_current()->cs = aux->cs;
 
-	if (process_exec(aux->fn_copy) < 0)
+	if (process_exec(fn_copy) < 0)
 		PANIC("Fail to launch initd\n");
 	NOT_REACHED();
 }
 
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
+struct fork_args
+{
+	struct thread *parent;
+	struct intr_frame if_;
+};
+
 tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 {
 	/* Clone current thread to new thread.*/
-	return thread_create(name,
-						 PRI_DEFAULT, __do_fork, thread_current());
+	struct fork_args *aux = malloc(sizeof(struct fork_args));
+	aux->parent = thread_current();
+	aux->if_ = *if_;
+
+	tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, aux);
+	if (tid == TID_ERROR)
+	{
+		free(aux);
+	}
+
+	return tid;
 }
 
 #ifndef VM
@@ -117,26 +126,43 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	struct thread *current = thread_current();
 	struct thread *parent = (struct thread *)aux;
 	void *parent_page;
-	void *newpage;
+	void *new_page;
 	bool writable;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	if (is_kernel_vaddr(va))
+	{
+		return true;
+	}
 
 	/* 2. Resolve VA from the parent's page map level 4. */
 	parent_page = pml4_get_page(parent->pml4, va);
+	if (parent_page == NULL)
+	{
+		return false;
+	}
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
+	new_page = palloc_get_page(PAL_USER | PAL_ZERO);
+	if (new_page == NULL)
+	{
+		return false;
+	}
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
+	memcpy(new_page, parent_page, PGSIZE);
+	writable = is_writable(pte);
 
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
-	if (!pml4_set_page(current->pml4, va, newpage, writable))
+	if (!pml4_set_page(current->pml4, va, new_page, writable))
 	{
 		/* 6. TODO: if fail to insert page, do error handling. */
+		palloc_free_page(new_page);
+		return false;
 	}
 	return true;
 }
@@ -147,17 +173,19 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
  *       That is, you are required to pass second argument of process_fork to
  *       this function. */
 static void
-__do_fork(void *aux)
+__do_fork(void *_aux)
 {
+	struct fork_args *aux = _aux;
 	struct intr_frame if_;
-	struct thread *parent = (struct thread *)aux;
+	struct thread *parent = aux->parent;
 	struct thread *current = thread_current();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
+	struct intr_frame parent_if = aux->if_;
 	bool succ = true;
+	free(_aux);
 
 	/* 1. Read the cpu context to local stack. */
-	memcpy(&if_, parent_if, sizeof(struct intr_frame));
+	memcpy(&if_, &parent_if, sizeof(struct intr_frame));
 
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
@@ -232,22 +260,18 @@ int process_exec(void *f_name)
  * does nothing. */
 int process_wait(tid_t child_tid UNUSED)
 {
-	// struct semaphore sema;
-	// sema_init(&sema, 0);
-	// sema_down(&sema);
-
-	struct child_status *cs = list_entry(list_pop_front(&thread_current()->children), struct child_status, elem);
-
-	sema_down(&cs->dead);
-
-	free(cs);
-
-	// list_pop_front(&thread_current()->children);
-	// sema_down(&dead);
-
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+
+	struct child_status *cs = find_matched_tid(child_tid);
+	if (!cs)
+	{
+		return -1;
+	}
+	sema_down(&cs->dead);
+
+	free(cs);
 	return -1;
 }
 

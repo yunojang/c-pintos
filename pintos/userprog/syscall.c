@@ -24,6 +24,8 @@ static void handle_exit(int status);
 static int handle_filesize(int fd);
 static int handle_read(int fd, void *buffer, unsigned size);
 static int handle_write(int fd, const void *uaddr, size_t n);
+static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if);
+static int handle_wait(tid_t tid);
 
 /* System call.
  *
@@ -101,19 +103,16 @@ static size_t copy_in_string(char *kdst, const char *usrc, size_t max)
 	return n;
 }
 
-static char *copy_file(char *file)
+static bool copy_in_file(const char *file, char *out)
 {
 	ASSERT(file != NULL);
 
-	char *name = malloc(NAME_MAX + 1);
 	size_t len;
-	// file name max사이즈보다 크면 null 반환
-	if ((len = copy_in_string(name, file, NAME_MAX + 1)) > NAME_MAX)
+	if ((len = copy_in_string(out, file, NAME_MAX + 1)) > NAME_MAX)
 	{
-		return NULL;
+		return false;
 	}
-
-	return name;
+	return true;
 }
 
 static size_t copy_in(void *kdst, const void *usrc, size_t size)
@@ -156,28 +155,6 @@ static int fd_install()
 
 // ---
 
-// list utils
-
-typedef bool list_match_func(const struct list_elem *a, void *aux);
-
-static struct list_elem *list_find(struct list *l, list_match_func match, void *aux)
-{
-	ASSERT(l != NULL);
-	struct list_elem *cur;
-
-	for (cur = list_begin(l); cur != list_end(l); cur = list_next(cur))
-	{
-		if (match(cur, aux))
-		{
-			return cur;
-		}
-	}
-
-	return NULL;
-}
-
-// ---
-
 // fd
 static bool match_fd(const struct list_elem *a, void *aux)
 {
@@ -185,17 +162,36 @@ static bool match_fd(const struct list_elem *a, void *aux)
 	return list_entry(a, struct fd_elem, elem)->fd == fd;
 }
 
-static struct fd_elem *find_fd_elem(struct list *l, int find_fd)
+static struct fd_elem *find_matched_fd(struct list *l, int find_fd)
 {
-	struct list_elem *elem;
-	if ((elem = list_find(l, match_fd, find_fd)) == NULL)
+	struct list_elem *le;
+	if ((le = list_find(l, match_fd, find_fd)) == NULL)
 	{
 		return NULL;
 	}
 
-	return list_entry(list_find(l, match_fd, find_fd), struct fd_elem, elem);
+	return list_entry(le, struct fd_elem, elem);
 }
 // ---
+
+static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if)
+{
+	char name[THREAD_NAME_MAX];
+	if (copy_in_string(name, thread_name, THREAD_NAME_MAX) >= THREAD_NAME_MAX)
+	{
+		name[THREAD_NAME_MAX - 1] = '\0';
+	}
+
+	tid_t child_tid = process_fork(name, parent_if);
+	if (child_tid == TID_ERROR)
+	{
+		return TID_ERROR;
+	}
+
+	// copy fds
+
+	return child_tid;
+}
 
 static int handle_filesize(int fd)
 {
@@ -207,7 +203,7 @@ static int handle_filesize(int fd)
 	struct thread *t = thread_current();
 	struct fd_elem *fe;
 
-	if ((fe = find_fd_elem(&t->fds, fd)) == NULL)
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
 		return -1;
 	}
@@ -226,7 +222,7 @@ static int handle_read(int fd, void *ubuf, unsigned size)
 	struct fd_elem *fe;
 
 	// invalid fd
-	if (fd != STDIN_FD && (fe = find_fd_elem(&t->fds, fd)) == NULL)
+	if (fd != STDIN_FD && (fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
 		return -1;
 	}
@@ -254,7 +250,7 @@ static int handle_read(int fd, void *ubuf, unsigned size)
 
 static int handle_write(int fd, const void *uaddr, size_t n)
 {
-	if (n == 0 || fd == STDIN_FD)
+	if (n == 0)
 	{
 		return 0;
 	}
@@ -262,7 +258,7 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 	struct thread *t = thread_current();
 	struct fd_elem *fe;
 
-	if (fd != STDOUT_FD && (fe = find_fd_elem(&t->fds, fd)) == NULL)
+	if (fd != STDOUT_FD && (fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
 		return -1;
 	}
@@ -273,19 +269,20 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 	}
 
 	void *tmp_buf = malloc(n);
+	size_t write_n;
 	if (fd == STDOUT_FD)
 	{
 		copy_in(tmp_buf, uaddr, n);
 		putbuf(tmp_buf, n);
+		write_n = n;
 	}
 	else
 	{
 		copy_in(tmp_buf, uaddr, n);
-		file_write(fe->file, tmp_buf, n);
+		write_n = file_write(fe->file, tmp_buf, n);
 	}
-
 	free(tmp_buf);
-	return n;
+	return write_n;
 }
 
 static void handle_close(int fd)
@@ -293,7 +290,7 @@ static void handle_close(int fd)
 	struct thread *t = thread_current();
 	struct fd_elem *fe;
 
-	if ((fe = find_fd_elem(&t->fds, fd)) == NULL)
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
 		return;
 	}
@@ -315,14 +312,13 @@ static int handle_open(char *file)
 	ASSERT(file != NULL);
 	struct thread *t = thread_current();
 
-	char *name;
-	if ((name = copy_file(file)) == NULL)
+	char name[NAME_MAX + 1];
+	if (!copy_in_file(file, name))
 	{
 		return -1;
 	}
 
 	struct file *f = filesys_open(name);
-	free(name);
 
 	// file not in dir
 	if (f == NULL)
@@ -342,14 +338,14 @@ static bool handle_create(char *file, unsigned int initial_size)
 {
 	ASSERT(file != NULL);
 
-	char *name;
-	if ((name = copy_file(file)) == NULL)
+	char name[NAME_MAX + 1];
+	if (!copy_in_file(file, name))
 	{
 		return false;
 	}
 
 	bool success = filesys_create(name, initial_size);
-	free(name);
+
 	return success;
 }
 
@@ -358,7 +354,7 @@ static void handle_exit(int status)
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
 
-	// fd 정리
+	// fd 정리 -> fd 전체 flush
 
 	// exit msg
 	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
@@ -366,6 +362,18 @@ static void handle_exit(int status)
 	// 부모 통지 (msg 출력 후 통지)
 	sema_up(&cur->cs->dead);
 	thread_exit();
+}
+
+static int handle_wait(tid_t tid)
+{
+	struct child_status *cs;
+	if ((cs = find_matched_tid(tid)) == NULL)
+	{
+		// invalid tid fault
+		return -1;
+	}
+	sema_down(&cs->dead);
+	free(cs);
 }
 
 /* The main system call interface */
@@ -404,6 +412,12 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		break;
 	case SYS_CLOSE:
 		handle_close(f->R.rdi);
+		break;
+	case SYS_FORK:
+		f->R.rax = handle_fork(f->R.rdi, f);
+		break;
+	case SYS_WAIT:
+		f->R.rax = handle_wait(f->R.rdi);
 		break;
 	default:
 		break;
