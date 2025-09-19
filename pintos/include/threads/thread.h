@@ -92,6 +92,7 @@ struct child_status
 	struct semaphore dead;
 	tid_t tid;
 	bool exited;
+	int exit_status;
 	struct list_elem elem;
 };
 

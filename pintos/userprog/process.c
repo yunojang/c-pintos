@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #include "threads/malloc.h"
+#include "userprog/syscall.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -99,22 +100,35 @@ struct fork_args
 {
 	struct thread *parent;
 	struct intr_frame if_;
+	struct semaphore fork_ready;
+	bool ok;
 };
 
 tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 {
 	/* Clone current thread to new thread.*/
 	struct fork_args *aux = malloc(sizeof(struct fork_args));
+	if (!aux)
+	{
+		return TID_ERROR;
+	}
 	aux->parent = thread_current();
 	aux->if_ = *if_;
+	sema_init(&aux->fork_ready, 0);
+	aux->ok = false;
 
 	tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, aux);
 	if (tid == TID_ERROR)
 	{
 		free(aux);
+		return TID_ERROR;
 	}
 
-	return tid;
+	sema_down(&aux->fork_ready);
+	tid_t ret = aux->ok ? tid : TID_ERROR;
+	free(aux);
+
+	return ret;
 }
 
 #ifndef VM
@@ -139,7 +153,7 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	parent_page = pml4_get_page(parent->pml4, va);
 	if (parent_page == NULL)
 	{
-		return false;
+		return true;
 	}
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
@@ -168,6 +182,43 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 }
 #endif
 
+static bool duplicate_fd(struct thread *dst, struct thread *src)
+{
+	struct list_elem *e;
+	for (e = list_begin(&src->fds); e != list_end(&src->fds); e = list_next(e))
+	{
+		struct fd_elem *src_fd = list_entry(e, struct fd_elem, elem);
+		struct fd_elem *dst_fd = malloc(sizeof *dst_fd);
+
+		if (!dst_fd)
+		{
+			goto fail;
+		}
+
+		dst_fd->fd = src_fd->fd;
+		dst_fd->file = file_duplicate(src_fd->file);
+		if (!dst_fd->file)
+		{
+			free(dst_fd);
+			goto fail;
+		}
+
+		list_push_back(&dst->fds, &dst_fd->elem);
+	}
+
+	return true;
+fail:
+	while (!list_empty(&dst->fds))
+	{
+		struct list_elem *x = list_pop_back(&dst->fds);
+		struct fd_elem *t = list_entry(x, struct fd_elem, elem);
+		if (t->file)
+			file_close(t->file);
+		free(t);
+	}
+	return false;
+}
+
 /* A thread function that copies parent's execution context.
  * Hint) parent->tf does not hold the userland context of the process.
  *       That is, you are required to pass second argument of process_fork to
@@ -176,16 +227,16 @@ static void
 __do_fork(void *_aux)
 {
 	struct fork_args *aux = _aux;
-	struct intr_frame if_;
 	struct thread *parent = aux->parent;
 	struct thread *current = thread_current();
-	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame parent_if = aux->if_;
 	bool succ = true;
-	free(_aux);
+
+	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
+	struct intr_frame if_ = aux->if_;
+	// struct intr_frame parent_if =
+	// memcpy(&if_, &parent_if, sizeof(struct intr_frame));
 
 	/* 1. Read the cpu context to local stack. */
-	memcpy(&if_, &parent_if, sizeof(struct intr_frame));
 
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
@@ -208,12 +259,23 @@ __do_fork(void *_aux)
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
 
+	// file_duplicate();
+	if (!duplicate_fd(current, parent))
+		goto error;
+
 	process_init();
 
 	/* Finally, switch to the newly created process. */
 	if (succ)
+	{
+		if_.R.rax = 0; // fork가 0을 리턴해야함
+		aux->ok = true;
+		sema_up(&aux->fork_ready);
 		do_iret(&if_);
+	}
 error:
+	aux->ok = false;
+	sema_up(&aux->fork_ready);
 	thread_exit();
 }
 
@@ -271,6 +333,7 @@ int process_wait(tid_t child_tid UNUSED)
 	}
 	sema_down(&cs->dead);
 
+	list_remove(&cs->elem);
 	free(cs);
 	return -1;
 }

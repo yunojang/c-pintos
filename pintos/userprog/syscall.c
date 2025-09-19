@@ -53,15 +53,6 @@ void syscall_init(void)
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
-// struct --
-struct fd_elem
-{
-	int fd;
-	struct file *file;
-	struct list_elem elem;
-};
-// ---
-
 // utils ---
 
 static void *valid_uaddr(const char *uaddr)
@@ -353,6 +344,7 @@ static void handle_exit(int status)
 {
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
+	cur->cs->exit_status = status;
 
 	// fd 정리 -> fd 전체 flush
 
@@ -369,16 +361,22 @@ static int handle_wait(tid_t tid)
 	struct child_status *cs;
 	if ((cs = find_matched_tid(tid)) == NULL)
 	{
-		// invalid tid fault
-		return -1;
+		return -1; // invalid tid fault
 	}
 	sema_down(&cs->dead);
+	int exit_status = cs->exit_status;
+	list_remove(&cs->elem);
 	free(cs);
+	return exit_status;
 }
 
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {
+	// printf("[syscall] thr=%s tid=%d no=%lld rip=%p rsp=%p\n",
+	// 	   thread_current()->name, thread_current()->tid,
+	// 	   f->R.rax, (void *)f->rip, (void *)f->rsp);
+
 	switch (f->R.rax)
 	{
 	case SYS_EXIT:
