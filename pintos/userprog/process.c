@@ -295,17 +295,27 @@ int process_exec(void *f_name)
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
+	struct thread *cur = thread_current();
+	uint64_t *old_page = cur->pml4;
+
 	/* We first kill the current context */
-	process_cleanup();
+	// process_cleanup();
 
 	/* And then load the binary */
 	success = load(file_name, &_if);
+	palloc_free_page(file_name);
 
 	/* If load failed, quit. */
-	palloc_free_page(file_name);
 	if (!success)
+	{
+		uint64_t *bad = cur->pml4;
+		cur->pml4 = old_page;
+		process_activate(cur);
+		pml4_destroy(bad);
 		return -1;
+	}
 
+	pml4_destroy(old_page);
 	/* Start switched process. */
 	do_iret(&_if);
 	NOT_REACHED();

@@ -8,6 +8,7 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "threads/malloc.h"
+#include "threads/palloc.h"
 #include "include/filesys/directory.h"
 #include "filesys/filesys.h"
 
@@ -26,6 +27,7 @@ static int handle_read(int fd, void *buffer, unsigned size);
 static int handle_write(int fd, const void *uaddr, size_t n);
 static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if);
 static int handle_wait(tid_t tid);
+static int handle_exec(const char *cmd_line);
 
 /* System call.
  *
@@ -78,19 +80,19 @@ static size_t copy_in_string(char *kdst, const char *usrc, size_t max)
 	for (n = 0; n < max; n++)
 	{
 		const char *p = usrc + n;
-		if (valid_uaddr(p) == NULL)
+		uint8_t *vaddr;
+		if ((vaddr = valid_uaddr(p)) == NULL)
 		{
 			handle_exit(-1);
 		}
+		uint8_t c = *vaddr;
+		((uint8_t *)kdst)[n] = c;
 
-		char c = *p;
-		kdst[n] = c;
 		if (c == '\0')
 		{
 			return n;
 		}
 	}
-
 	return n;
 }
 
@@ -164,6 +166,26 @@ static struct fd_elem *find_matched_fd(struct list *l, int find_fd)
 	return list_entry(le, struct fd_elem, elem);
 }
 // ---
+
+static int handle_exec(const char *cmd_line)
+{
+	char *cmd = palloc_get_page(0);
+	memset(cmd, 0, PGSIZE);
+	if (cmd == NULL)
+	{
+		return -1;
+	}
+	int n = copy_in_string(cmd, cmd_line, PGSIZE);
+	if (n >= PGSIZE)
+	{
+		return -1;
+	}
+
+	if (process_exec(cmd) < 0)
+	{
+		handle_exit(-1);
+	}
+}
 
 static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if)
 {
@@ -251,12 +273,7 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 
 	if (fd != STDOUT_FD && (fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
-		return -1;
-	}
-
-	if (!valid_uaddr(uaddr))
-	{
-		handle_exit(-1);
+		return 0;
 	}
 
 	void *tmp_buf = malloc(n);
@@ -413,6 +430,9 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		break;
 	case SYS_FORK:
 		f->R.rax = handle_fork(f->R.rdi, f);
+		break;
+	case SYS_EXEC:
+		f->R.rax = handle_exec(f->R.rdi);
 		break;
 	case SYS_WAIT:
 		f->R.rax = handle_wait(f->R.rdi);
