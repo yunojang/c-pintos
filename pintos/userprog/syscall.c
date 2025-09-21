@@ -11,6 +11,7 @@
 #include "threads/palloc.h"
 #include "include/filesys/directory.h"
 #include "filesys/filesys.h"
+#include "filesys/file.h"
 
 #define STDIN_FD 0
 #define STDOUT_FD 1
@@ -21,13 +22,14 @@ void syscall_handler(struct intr_frame *);
 static void *valid_uaddr(const char *uaddr);
 static size_t copy_in_string(char *dst, const char *src, size_t max);
 
-static void handle_exit(int status);
 static int handle_filesize(int fd);
 static int handle_read(int fd, void *buffer, unsigned size);
 static int handle_write(int fd, const void *uaddr, size_t n);
 static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if);
 static int handle_wait(tid_t tid);
 static int handle_exec(const char *cmd_line);
+static void handle_seek(int fd, off_t position);
+static off_t handle_tell(int fd);
 
 /* System call.
  *
@@ -140,7 +142,7 @@ static size_t copy_out(void *udst, const void *ksrc, size_t size)
 	return n;
 }
 
-static int next_fd = 2;
+static int next_fd = 3;
 static int fd_install()
 {
 	return next_fd++;
@@ -166,6 +168,40 @@ static struct fd_elem *find_matched_fd(struct list *l, int find_fd)
 	return list_entry(le, struct fd_elem, elem);
 }
 // ---
+
+static void handle_seek(int fd, off_t position)
+{
+	if (fd == STDIN_FD && fd == STDOUT_FD)
+	{
+		return;
+	}
+
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
+	{
+		return;
+	}
+
+	file_seek(fe->file, position);
+}
+
+static off_t handle_tell(int fd)
+{
+	if (fd == STDIN_FD && fd == STDOUT_FD)
+	{
+		return;
+	}
+
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
+	{
+		return;
+	}
+
+	return file_tell(fe->file);
+}
 
 static int handle_exec(const char *cmd_line)
 {
@@ -303,6 +339,8 @@ static void handle_close(int fd)
 		return;
 	}
 
+	file_close(fe->file);
+
 	list_remove(&fe->elem);
 	free(fe);
 }
@@ -357,7 +395,7 @@ static bool handle_create(char *file, unsigned int initial_size)
 	return success;
 }
 
-static void handle_exit(int status)
+void handle_exit(int status)
 {
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
@@ -436,6 +474,12 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		break;
 	case SYS_WAIT:
 		f->R.rax = handle_wait(f->R.rdi);
+		break;
+	case SYS_SEEK:
+		handle_seek(f->R.rdi, f->R.rsi);
+		break;
+	case SYS_TELL:
+		f->R.rax = handle_tell(f->R.rdi);
 		break;
 	default:
 		break;

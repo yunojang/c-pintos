@@ -13,3 +13,5 @@ struct fd_elem
     struct file *file;
     struct list_elem elem;
 };
+
+void handle_exit(int status);
