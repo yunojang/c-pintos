@@ -12,6 +12,7 @@
 #include "include/filesys/directory.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "userprog/process.h"
 
 #define STDIN_FD 0
 #define STDOUT_FD 1
@@ -129,11 +130,15 @@ static size_t copy_in(void *kdst, const void *usrc, size_t size)
 // kernel -> user
 static size_t copy_out(void *udst, const void *ksrc, size_t size)
 {
+	struct thread *t = thread_current();
 	size_t n = 0;
 	while (n < size)
 	{
+		uint8_t *cur = (uint8_t *)udst + n;
 		uint8_t *kaddr;
-		if ((kaddr = valid_uaddr((char *)udst + n)) == NULL)
+		if ((kaddr = valid_uaddr(cur)) == NULL
+			// || !pml4_is_writable(t->pml4, cur)
+		)
 		{
 			handle_exit(-1);
 		}
@@ -236,8 +241,6 @@ static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if)
 	{
 		return TID_ERROR;
 	}
-
-	// copy fds
 
 	return child_tid;
 }
