@@ -14,9 +14,6 @@
 #include "filesys/file.h"
 #include "userprog/process.h"
 
-#define STDIN_FD 0
-#define STDOUT_FD 1
-
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
 
@@ -211,15 +208,18 @@ static off_t handle_tell(int fd)
 static int handle_exec(const char *cmd_line)
 {
 	char *cmd = palloc_get_page(0);
-	memset(cmd, 0, PGSIZE);
 	if (cmd == NULL)
 	{
-		return -1;
+		handle_exit(-1);
+		// return -1;
 	}
+
+	memset(cmd, 0, PGSIZE);
 	int n = copy_in_string(cmd, cmd_line, PGSIZE);
 	if (n >= PGSIZE)
 	{
-		return -1;
+		handle_exit(-1);
+		// return -1;
 	}
 
 	if (process_exec(cmd) < 0)
@@ -376,6 +376,12 @@ static int handle_open(char *file)
 	}
 
 	struct fd_elem *fe = malloc(sizeof *fe);
+	if (fe == NULL)
+	{
+		file_close(f);
+		return -1;
+	}
+
 	fe->fd = fd_install();
 	fe->file = f;
 
@@ -398,14 +404,24 @@ static bool handle_create(char *file, unsigned int initial_size)
 	return success;
 }
 
+static void fds_flush(struct list *fds)
+{
+	while (!list_empty(fds))
+	{
+		struct fd_elem *fe = list_entry(list_pop_front(fds), struct fd_elem, elem);
+		file_close(fe->file);
+		free(fe);
+	}
+}
+
 void handle_exit(int status)
 {
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
 	cur->cs->exit_status = status;
 
-	// fd 정리 -> fd 전체 flush
-
+	// fd 정리 -> fd 전체 close 및 정리하기
+	fds_flush(&cur->fds);
 	// exit msg
 	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
 
