@@ -444,6 +444,33 @@ static int handle_wait(tid_t tid)
 
 static int handle_dup2(int oldfd, int newfd)
 {
+	struct thread *t = thread_current();
+	struct fd_elem *old_fe;
+	if ((old_fe = find_matched_fd(&t->fds, oldfd)) == NULL)
+	{
+		return -1;
+	}
+
+	if (oldfd == newfd)
+	{
+		return newfd;
+	}
+
+	struct fd_elem *new_fe;
+	if (new_fe = find_matched_fd(&t->fds, newfd))
+	{
+		handle_close(newfd);
+	}
+
+	new_fe = malloc(sizeof(struct fd_elem));
+	new_fe->fd = newfd;
+	// new_fe->fh = old_fe->fh;
+	// new_fe->fh->refcnt++;
+	new_fe->file = old_fe->file;
+	new_fe->type = old_fe->type;
+
+	list_insert_ordered(&t->fds, &new_fe->elem, lower_fd, NULL);
+	return newfd;
 }
 
 bool init_fds(struct list *fds)
