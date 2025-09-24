@@ -19,6 +19,11 @@ enum fd_type
     FD_STD_OUT,
 };
 
+// struct ofile
+// {
+//     struct file *file;
+// };
+
 struct fd_elem
 {
     int fd;

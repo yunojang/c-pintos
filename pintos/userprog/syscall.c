@@ -464,9 +464,8 @@ static int handle_dup2(int oldfd, int newfd)
 
 	new_fe = malloc(sizeof(struct fd_elem));
 	new_fe->fd = newfd;
-	// new_fe->fh = old_fe->fh;
-	// new_fe->fh->refcnt++;
 	new_fe->file = old_fe->file;
+	file_ref(new_fe->file);
 	new_fe->type = old_fe->type;
 
 	list_insert_ordered(&t->fds, &new_fe->elem, lower_fd, NULL);
