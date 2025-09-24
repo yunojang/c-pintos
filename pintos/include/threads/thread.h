@@ -114,6 +114,7 @@ struct thread
 	struct list_elem donation_elem; /* Donation list element. */
 	int exit_status;
 	struct list fds;
+	bool fds_inited;
 	struct file *running_file;
 
 #ifdef USERPROG

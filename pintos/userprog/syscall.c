@@ -28,6 +28,7 @@ static int handle_wait(tid_t tid);
 static int handle_exec(const char *cmd_line);
 static void handle_seek(int fd, off_t position);
 static off_t handle_tell(int fd);
+static int handle_dup2(int oldfd, int newfd);
 
 /* System call.
  *
@@ -171,40 +172,6 @@ static struct fd_elem *find_matched_fd(struct list *l, int find_fd)
 }
 // ---
 
-static void handle_seek(int fd, off_t position)
-{
-	if (fd == STDIN_FD && fd == STDOUT_FD)
-	{
-		return;
-	}
-
-	struct thread *t = thread_current();
-	struct fd_elem *fe;
-	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
-	{
-		return;
-	}
-
-	file_seek(fe->file, position);
-}
-
-static off_t handle_tell(int fd)
-{
-	if (fd == STDIN_FD && fd == STDOUT_FD)
-	{
-		return;
-	}
-
-	struct thread *t = thread_current();
-	struct fd_elem *fe;
-	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
-	{
-		return;
-	}
-
-	return file_tell(fe->file);
-}
-
 static int handle_exec(const char *cmd_line)
 {
 	char *cmd = palloc_get_page(0);
@@ -245,17 +212,36 @@ static tid_t handle_fork(const char *thread_name, struct intr_frame *parent_if)
 	return child_tid;
 }
 
-static int handle_filesize(int fd)
+static void handle_seek(int fd, off_t position)
 {
-	if (fd == STDIN_FD || fd == STDOUT_FD)
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL || fe->type != FD_FILE)
 	{
-		return -1;
+		return;
 	}
 
+	file_seek(fe->file, position);
+}
+
+static off_t handle_tell(int fd)
+{
+	struct thread *t = thread_current();
+	struct fd_elem *fe;
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL || fe->type != FD_FILE)
+	{
+		return;
+	}
+
+	return file_tell(fe->file);
+}
+
+static int handle_filesize(int fd)
+{
 	struct thread *t = thread_current();
 	struct fd_elem *fe;
 
-	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL || fe->type != FD_FILE)
 	{
 		return -1;
 	}
@@ -270,17 +256,23 @@ static int handle_read(int fd, void *ubuf, unsigned size)
 		return 0;
 	}
 
+	if (fd == STDOUT_FD)
+	{
+		return -1;
+	}
+
 	struct thread *t = thread_current();
 	struct fd_elem *fe;
 
-	// invalid fd
-	if (fd != STDIN_FD && (fe = find_matched_fd(&t->fds, fd)) == NULL)
+	// invalid fd (stdin in fds)
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
 		return -1;
 	}
 
 	size_t read_n;
 	if (fd == STDIN_FD)
+	// if (fe->type == FD_STD_IN)
 	{
 		for (int i = 0; i < size; i++)
 		{
@@ -302,7 +294,7 @@ static int handle_read(int fd, void *ubuf, unsigned size)
 
 static int handle_write(int fd, const void *uaddr, size_t n)
 {
-	if (n == 0)
+	if (n == 0 || fd == STDIN_FD)
 	{
 		return 0;
 	}
@@ -310,14 +302,14 @@ static int handle_write(int fd, const void *uaddr, size_t n)
 	struct thread *t = thread_current();
 	struct fd_elem *fe;
 
-	if (fd != STDOUT_FD && (fe = find_matched_fd(&t->fds, fd)) == NULL)
+	if ((fe = find_matched_fd(&t->fds, fd)) == NULL)
 	{
 		return 0;
 	}
 
 	void *tmp_buf = malloc(n);
 	size_t write_n;
-	if (fd == STDOUT_FD)
+	if (fe->type == FD_STD_OUT)
 	{
 		copy_in(tmp_buf, uaddr, n);
 		putbuf(tmp_buf, n);
@@ -342,8 +334,10 @@ static void handle_close(int fd)
 		return;
 	}
 
-	file_close(fe->file);
-
+	if (fe->type == FD_FILE)
+	{
+		file_close(fe->file);
+	}
 	list_remove(&fe->elem);
 	free(fe);
 }
@@ -384,6 +378,7 @@ static int handle_open(char *file)
 
 	fe->fd = fd_install();
 	fe->file = f;
+	fe->type = FD_FILE;
 
 	list_insert_ordered(&t->fds, &fe->elem, lower_fd, NULL);
 	return fe->fd;
@@ -409,7 +404,10 @@ static void fds_flush(struct list *fds)
 	while (!list_empty(fds))
 	{
 		struct fd_elem *fe = list_entry(list_pop_front(fds), struct fd_elem, elem);
-		file_close(fe->file);
+		if (fe->type == FD_FILE)
+		{
+			file_close(fe->file);
+		}
 		free(fe);
 	}
 }
@@ -442,6 +440,34 @@ static int handle_wait(tid_t tid)
 	list_remove(&cs->elem);
 	free(cs);
 	return exit_status;
+}
+
+static int handle_dup2(int oldfd, int newfd)
+{
+}
+
+bool init_fds(struct list *fds)
+{
+	struct fd_elem *in_fd = malloc(sizeof(struct fd_elem));
+	if (in_fd == NULL)
+	{
+		return false;
+	}
+	in_fd->fd = STDIN_FD;
+	in_fd->type = FD_STD_IN;
+	in_fd->file = NULL;
+	list_push_back(fds, &in_fd->elem);
+
+	struct fd_elem *out_fd = malloc(sizeof(struct fd_elem));
+	if (out_fd == NULL)
+	{
+		return false;
+	}
+	out_fd->fd = STDOUT_FD;
+	out_fd->type = FD_STD_OUT;
+	out_fd->file = NULL;
+	list_push_back(fds, &out_fd->elem);
+	return true;
 }
 
 /* The main system call interface */
@@ -500,6 +526,8 @@ void syscall_handler(struct intr_frame *f UNUSED)
 	case SYS_TELL:
 		f->R.rax = handle_tell(f->R.rdi);
 		break;
+	case SYS_DUP2:
+		f->R.rax = handle_dup2(f->R.rdi, f->R.rsi);
 	default:
 		break;
 	}

@@ -182,7 +182,7 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 }
 #endif
 
-static bool duplicate_fd(struct thread *dst, struct thread *src)
+static bool duplicate_fds(struct thread *dst, struct thread *src)
 {
 	struct list_elem *e;
 	for (e = list_begin(&src->fds); e != list_end(&src->fds); e = list_next(e))
@@ -196,11 +196,19 @@ static bool duplicate_fd(struct thread *dst, struct thread *src)
 		}
 
 		dst_fd->fd = src_fd->fd;
-		dst_fd->file = file_duplicate(src_fd->file);
-		if (!dst_fd->file)
+		dst_fd->type = src_fd->type;
+		if (src_fd->type == FD_FILE)
 		{
-			free(dst_fd);
-			goto fail;
+			dst_fd->file = file_duplicate(src_fd->file);
+			if (!dst_fd->file)
+			{
+				free(dst_fd);
+				goto fail;
+			}
+		}
+		else
+		{
+			dst_fd->file = NULL;
 		}
 
 		list_push_back(&dst->fds, &dst_fd->elem);
@@ -260,7 +268,7 @@ __do_fork(void *_aux)
 	 * TODO:       the resources of parent.*/
 
 	// file_duplicate();
-	if (!duplicate_fd(current, parent))
+	if (!duplicate_fds(current, parent))
 		goto error;
 
 	process_init();
@@ -316,6 +324,13 @@ int process_exec(void *f_name)
 	}
 
 	pml4_destroy(old_page);
+
+	struct thread *t = thread_current();
+	if (!t->fds_inited)
+	{
+		init_fds(&t->fds);
+		t->fds_inited = true;
+	}
 	/* Start switched process. */
 	do_iret(&_if);
 	NOT_REACHED();
