@@ -203,6 +203,14 @@ tid_t thread_create(const char *name, int priority,
 	init_thread(t, name, priority);
 	tid = t->tid = allocate_tid();
 
+	struct child_status *cs = malloc(sizeof(struct child_status));
+	sema_init(&cs->dead, 0);
+	cs->exited = false;
+	cs->tid = tid;
+
+	t->cs = cs;
+	list_push_back(&thread_current()->children, &cs->elem);
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t)kernel_thread;
@@ -218,6 +226,27 @@ tid_t thread_create(const char *name, int priority,
 	thread_unblock(t);
 
 	return tid;
+}
+
+// [utils] pid 일치하는 자식 찾기
+static bool match_tid(const struct list_elem *item, void *aux)
+{
+	struct child_status *cs = list_entry(item, struct child_status, elem);
+	tid_t item_tid = list_entry(item, struct child_status, elem)->tid;
+	return item_tid == aux;
+}
+
+struct child_status *find_matched_tid(tid_t tid)
+{
+	struct thread *t = thread_current();
+	int child_len = list_size(&t->children);
+	struct list_elem *item = list_find(&t->children, match_tid, tid);
+	if (item == NULL)
+	{
+		return NULL;
+	}
+
+	return list_entry(item, struct child_status, elem);
 }
 
 // 중단조건
@@ -582,6 +611,10 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
 	list_init(&t->donators);
+	list_init(&t->fds);
+#ifdef USERPROG
+	list_init(&t->children);
+#endif
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

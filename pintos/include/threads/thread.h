@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -85,24 +86,42 @@ typedef int tid_t;
  * only because they are mutually exclusive: only a thread in the
  * ready state is on the run queue, whereas only a thread in the
  * blocked state is on a semaphore wait list. */
+
+struct child_status
+{
+	struct semaphore dead;
+	tid_t tid;
+	bool exited;
+	int exit_status;
+	struct list_elem elem;
+};
+
+#define THREAD_NAME_MAX 16
+
 struct thread
 {
 	/* Owned by thread.c. */
-	tid_t tid;				   /* Thread identifier. */
-	enum thread_status status; /* Thread state. */
-	char name[16];			   /* Name (for debugging purposes). */
-	int base_priority;		   /* thread base priority. */
-	int priority;			   /* Priority. */
-	struct list donators;	   /* donation list. */
-	struct lock *waiting_lock;  /* wating lock. */
-	int64_t wakeup_tick;	   /* ticks of wakeup. */
+	tid_t tid;					/* Thread identifier. */
+	enum thread_status status;	/* Thread state. */
+	char name[THREAD_NAME_MAX]; /* Name (for debugging purposes). */
+	int base_priority;			/* thread base priority. */
+	int priority;				/* Priority. */
+	struct list donators;		/* donation list. */
+	struct lock *waiting_lock;	/* wating lock. */
+	int64_t wakeup_tick;		/* ticks of wakeup. */
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;			/* List element. */
 	struct list_elem donation_elem; /* Donation list element. */
+	int exit_status;
+	struct list fds;
+	bool fds_inited;
+	struct file *running_file;
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4; /* Page map level 4 */
+	struct list children;
+	struct child_status *cs;
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
@@ -155,5 +174,6 @@ void thread_restore_by_lock(struct lock *lock);
 void do_iret(struct intr_frame *tf);
 
 bool higher_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+struct child_status *find_matched_tid(tid_t pid); // find child by pid
 
 #endif /* threads/thread.h */
